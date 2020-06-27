@@ -49,7 +49,7 @@ AAPL_COVID19<-AAPL["2020-03-01::2020-06-16",]
 chartSeries(AAPL_COVID19)
 ```
 
-![](BigdataFinalProject_files/figure-gfm/MA-1.png)<!-- -->
+![](AAPL/BigdataFinalProject_files/figure-gfm/MA-1.png)<!-- -->
 
 ``` r
 #moving average
