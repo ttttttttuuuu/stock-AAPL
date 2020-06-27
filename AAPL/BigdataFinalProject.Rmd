@@ -1,0 +1,515 @@
+---
+title: "淺談公司財報與營收對於股價之影響及簡單預測"
+output: github_document
+---
+
+## 介紹:
+
+使用quantmod套件簡單呈現蘋果股票趨勢，然後收集蘋果從上市到現在的股價與相關數據，接著收集與整理蘋果的總營收與財務報表，探討兩者之間的關係，為何買賣股票需要參考這些數據，最後呈現簡單的預測。
+
+## 動機:
+
+原本想要做和疫情相關的股票分析，但是由於股票分析是時間序料的資料，然而疫情相關資料卻只有從今年1月開始，這使我們困擾許久，於是便開始發想，到底哪些時間序料的資料會影響股市走向，所以才著手開始進行我們的題目。
+
+## 資料來源
+
+```{r setup, eval=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(quantmod) #股票來源
+library(ggplot2) #畫圖
+require(TTR) #股票資料轉換
+require(rpart) #決策樹
+Url<-"https://www.macromicro.me/collections/21/us-apple" #爬蟲
+```
+
+## 分析議題
+###### 公司財報(總營收、毛利率、營業利率、淨利率、每股盈餘)與營收和股市到底有沒有關係？
+###### 我今天想買到底該不該買呢？
+
+## 分析結果
+###### 營業利率、每股盈餘與收盤價高度正相關，總營收微相關。
+###### 預測完當ATR 真實波動幅度均值大於7.7且DMI 動向指數大於18時，應該要買，否則先不動作。
+
+
+## AAPL (今天的一切以APPLE為例)
+
+```{r MA,message=FALSE}
+#取得股票
+library(quantmod)
+getSymbols("AAPL")
+#畫圖-疫情期間
+AAPL_COVID19<-AAPL["2020-03-01::2020-06-16",]
+chartSeries(AAPL_COVID19)
+
+#moving average
+ma5<-runMean(AAPL_COVID19[,4],n=5)
+ma20<-runMean(AAPL_COVID19[,4],n=20)
+ma60<-runMean(AAPL_COVID19[,4],n=60)
+addTA(ma5,on=1,col="blue")
+addTA(ma20,on=1,col="red")
+addTA(ma60,on=1,col="green")
+
+#BBands
+addBBands()
+```
+
+## AR
+
+```{r AR}
+library(ggplot2)
+getSymbols("AAPL",from = "2007-01-03",to = "2020-03-01")
+myStock <- AAPL
+
+myStock <- as.data.frame(myStock)
+myStock$Date <- rownames(myStock)
+myStock$Date <- as.Date(myStock$Date )
+ggplot(data = myStock,aes(x=Date, y=AAPL.Close))+ geom_line()+
+  labs(title='上市以來蘋果的收盤價')
+
+vec <-  c()
+for(p in c(1:20)){
+  mod <- ar.ols(myStock$AAPL.Close,order = p)
+  aka <- log(sum(mod$resid^2, na.rm = T)/mod$n.used)+ 2*(p+1)/mod$n.used #AIC
+  sch <- log(sum(mod$resid^2, na.rm = T)/mod$n.used)+ (p+1)*log(mod$n.used)/mod$n.used  #BIC
+  vec <- c(vec, as.integer(p), aka, sch)
+}
+
+
+info<-data.frame(matrix(vec, nrow=20, ncol = 3, byrow = T))
+colnames(info) <- c('Lagged Period','AIC','BIC')  
+matplot(info[,c(2:3)], type = c("l"), pch=1,col=1:2)  
+legend("topleft", legend = c("AIC","BIC"),col=1:2,pch=1)
+model <- ar.ols(myStock$AAPL.Close,order=which.min(info$AIC))
+date_seq = seq(as.Date('2020-03-01'),as.Date('2020-03-01')+89, by = 1)
+dat <- data.frame(Date=as.Date(date_seq),
+                  AAPL.Close = as.numeric(predict(mod, n.ahead = 90)$pred),
+                  group = 'pred',
+                  stringsAsFactors = F)
+
+AAPL_dat<- myStock[,c('Date','AAPL.Close')]
+AAPL_dat$group = 'orginal'
+AAPL_dat <- rbind(dat, AAPL_dat)
+
+ggplot(data = AAPL_dat)+
+  geom_line(aes(x=Date,y=AAPL.Close, colour=group),size = 1.2)+
+  labs(title='AAPL AR(9) Model Prediction')
+```
+
+## 探討公司財報與營收對於股價之影響
+
+```{r impact_setdata}
+library(quantmod)
+getSymbols("AAPL")
+myStock <- AAPL
+myStock= as.data.frame(to.quarterly(AAPL))
+rownames(myStock) = gsub(" Q1","-01-01",rownames(myStock))
+rownames(myStock) = gsub(" Q2","-04-01",rownames(myStock))
+rownames(myStock) = gsub(" Q3","-07-01",rownames(myStock))
+rownames(myStock) = gsub(" Q4","-10-01",rownames(myStock))
+date <- as.Date(rownames(myStock))
+myStock <- xts(myStock, date)
+
+require(TTR)
+#install.packages("randomForest")
+myTTR <- function(data){
+  names(data) <- sapply(X=names(data), FUN=function(x) strsplit(x, split=".", fixed=TRUE)[[1]][2])
+  #HLC : Object that is coercible to xts or matrix and contains High-Low-Close prices
+  myATR <- ATR(HLC(data))$atr #average true range 
+  mySMI <- SMI(HLC(data))$SMI #The SMI relates the close to the midpoint of the high/low range
+  myADX <- ADX(HLC(data))$ADX #Directional Movement Index
+  myAroon <- aroon(HLC(data)[,-3])$oscillator #AROON指標
+  myBBands <- BBands(HLC(data))$pctB #Bollinger Bands are a way to compare a security’s volatility and price levels over a period of time.
+  myChaikin <- Delt(chaikinVolatility(HLC(data)[,-3]))[,1] #A object of the same class as HLC and volume or a vector (if try.xts fails) containing the accumulation / distribution values.
+  #The Close Location Value (CLV) relates the day’s close to its trading range.
+  myCLV <- EMA(CLV(HLC(data)))[,1] #Exponential moving average.
+  myMACD <- MACD(data[,"Close"])[,2] #signal
+  myMFI <- MFI(HLC(data), data[,"Volume"])
+  mySAR <- SAR(data[,c("High", "Close")])[,1]
+  
+  result <- cbind(myATR, mySMI, myADX, myAroon, myBBands, myChaikin, myCLV, myMACD, myMFI, mySAR)
+  colnames(result) <- cbind("myATR", "mySMI", "myADX", "myAroon", "myBBands", "myChaikin", "myCLV", "myMACD", "myMFI", "mySAR") 
+  return(result) 
+}
+
+mystockTTR<-as.data.frame(myTTR(myStock))
+mystockTTR$Date <- rownames(mystockTTR)
+
+#爬蟲
+library(jsonlite)
+appleUrl<-"248,241,750,243,11503,251,11504,250,1788,264,265,1707,238,239,240,242"
+apple<-fromJSON(appleUrl)
+
+a1<-data.frame(apple$data$`c:248`$s[1])
+a2<-data.frame(apple$data$`c:248`$s[2])
+a2<-merge(a1,a2,by="X1",all=T)
+
+TotalRevenue<-data.frame(Date=a2$X1,
+                         TotalRevenue=a2$X2.x,
+                         AnnualGrowthRate=a2$X2.y)
+
+mystockTTR<-merge(mystockTTR,TotalRevenue, by = "Date", all = T)
+
+a2<-data.frame(apple$data$`c:1788`$s)
+a2_1<-a2[,1:22]
+a2_1<-a2_1[-c(2:4),]
+a2_1<-t(a2_1)
+a2_2<-a2[,23:44]
+a_final<-as.data.frame(t(a2_2))
+colnames(a_final) <- c("GrossMargin","OperatingRate","NetInterestRate","EarningsPerShare")
+rownames(a_final) <- c(1:22)
+a_final$Date<-a2_1
+a_final<-data.frame(a_final)
+mystockTTR<-merge(mystockTTR,a_final, by = "Date", all = T)
+
+myStock<-as.data.frame(myStock)
+myStock$Date<-rownames(myStock)
+mystockTTR<-merge(mystockTTR,myStock, by = "Date", all = T)
+
+test<-mystockTTR[34:54,]
+test$TotalRevenue<-as.double(test$TotalRevenue)
+test$GrossMargin<-as.double(test$GrossMargin)
+test$OperatingRate<-as.double(test$OperatingRate)
+test$NetInterestRate<-as.double(test$NetInterestRate)
+test$EarningsPerShare<-as.double(test$EarningsPerShare)
+rownames(test)<-c(1:21)
+knitr::kable(tail(test))
+```
+
+## 蘋果總營收、毛利率、營業利潤率、每股盈餘走勢圖
+
+```{r impact}
+AAPL_TotalRevenue<-ggplot(test, aes(x = Date, y = TotalRevenue, group = 1)) + geom_line()    +theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5))+labs(title='總營收')
+AAPL_TotalRevenue
+
+AAPL_GrossMargin<-ggplot(test, aes(x = Date, y = GrossMargin, group = 1)) + geom_line() +theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5))+labs(title='毛利率')
+AAPL_GrossMargin
+
+AAPL_OperatingRate<-ggplot(test, aes(x = Date, y = OperatingRate, group = 1)) + geom_line() +theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5))+labs(title='營業利潤率')
+AAPL_OperatingRate
+
+AAPL_EarningsPerShare<-ggplot(test, aes(x = Date, y = EarningsPerShare, group = 1)) + geom_line() +theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5))+labs(title='每股盈餘')
+AAPL_EarningsPerShare
+
+```
+
+## 收盤價回歸
+
+```{r impact regression,warning=FALSE}
+b3<-lm(`AAPL.Close`~GrossMargin+OperatingRate+NetInterestRate+EarningsPerShare, data =test, na.rm=F)
+summary(b3)
+```
+
+在AR的預測下我們看到近三個月的趨勢，正在向上爬升中
+在回歸之中我們看到營業利潤率、每股盈餘的高度相關
+那勢必就是到了預測該不該買的時候了
+
+
+# 訓練-股價預測模型
+```{r setup2, include=FALSE}
+library(quantmod)
+library(PerformanceAnalytics)
+library(tseries)
+library(e1071)
+library(ggplot2)
+getSymbols("AAPL")
+myStock <- AAPL
+```
+
+## step1模型建立
+
+## 定義功能以衡量績效
+
+```{r p1,warning=FALSE}
+library(quantmod)
+getSymbols("AAPL")
+myStock <- AAPL
+colnames(myStock) = paste("myStock",c("Open","High","Low","Close","Volume","Adjusted"), sep=".")
+p <- 0.025
+k <- 10
+T.index <- function(data,p,k){
+  require(quantmod)
+  hlc = HLC(data)
+  P <- rowMeans(hlc)
+  V <- matrix(NA, ncol=k, nrow=NROW(P))
+  for (i in 1:k) {
+    V[,i] <- Next(Delt(P,k=i),k=i)
+  }
+  T <- apply(V,1,function(x) sum(x,na.rm=TRUE))
+  T <- xts(x=T, order.by=time(data))
+  return(T)
+}
+```
+
+## 預測指標
+
+```{r p2,warning=FALSE}
+
+myTTR <- function(data){
+  require(TTR)
+  #install.packages("randomForest")
+  require(quantmod)
+  names(data) <- sapply(X=names(data), FUN=function(x) strsplit(x, split=".", fixed=TRUE)[[1]][2]) # change [2] 
+  myATR <- ATR(HLC(data))$atr
+  mySMI <- SMI(HLC(data))$SMI
+  myADX <- ADX(HLC(data))$ADX
+  myAroon <- aroon(HLC(data)[,-3])$oscillator
+  myBBands <- BBands(HLC(data))$pctB
+  myChaikin <- Delt(chaikinVolatility(HLC(data)[,-3]))[,1]
+  myCLV <- EMA(CLV(HLC(data)))[,1]
+  myMACD <- MACD(data[,"Close"])[,2]
+  myMFI <- MFI(HLC(data), data[,"Volume"])
+  mySAR <- SAR(data[,c("High", "Close")])[,1]
+  
+  result <- cbind(myATR, mySMI, myADX, myAroon, myBBands, myChaikin, myCLV, myMACD, myMFI, mySAR)
+  colnames(result) <- cbind("myATR", "mySMI", "myADX", "myAroon", "myBBands", "myChaikin", "myCLV", "myMACD", "myMFI", "mySAR") 
+  return(result) 
+
+}
+```
+
+## 模型設置
+
+```{r p3,warning=FALSE}
+rm(myTTR.data, model.data, train.data, test.data)
+myTTR.data <- myTTR(myStock)[,c("myATR", "myADX", "myMACD", "mySAR", "mySMI")]
+model.data <- specifyModel(formula=T.index(myStock, p=0.025, k=10) ~ myTTR.data + runMean(Cl(myStock)) )
+train.data <- as.data.frame(modelData(model.data, 
+                                      data.window=c(start(myStock), as.Date("2013-12-31")) )) #Books Error was here
+test.data <- as.data.frame(modelData(model.data, 
+                                     data.window=c(as.Date("2014-01-01"), end(myStock)) ))
+colnames(train.data) <- c("T", "myATR", "myADX", "myMACD", "mySAR", "mySMI", "runMean")
+colnames(test.data) <- c("T", "myATR", "myADX", "myMACD", "mySAR", "mySMI", "runMean")
+form <- as.formula("T~.")
+```
+
+## 擬合模型
+
+```{r p4,warning=FALSE}
+svm.model <- svm(form, train.data, cost=100)
+svm.predict <- predict(svm.model, na.omit(test.data))
+```
+
+## 將得到數據轉為買入/持有/賣出訊號
+
+```{r p5,warning=FALSE}
+# Transform from T.Index to Buy/Hold/Sell Signal
+T2Signal <- function(x, a1=-0.01, a2=-a1){
+  result <- ifelse(x<a1, "Sell", ifelse(x>a2, "Buy", "Hold"))
+  result <- factor(result, levels=c("Buy", "Hold", "Sell"))
+  return(result)
+}
+
+accuracy2 <- function(prediction, true){
+  t <- table(prediction, true)
+  result <- (t["Sell", "Sell"] + t["Buy", "Buy"]) / (t["Sell", "Sell"] + t["Buy", "Buy"] + t["Sell", "Buy"] + t["Buy", "Sell"])
+  return(result)
+}
+```
+
+## step2 開始測試
+
+```{r p7,warning=FALSE}
+getSymbols("AAPL")
+myStock <- AAPL
+colnames(myStock) = paste("myStock", c("Open","High","Low","Close","Volume","Adjusted"), sep=".")
+```
+
+## 指標依據
+
+```{r p8,warning=FALSE}
+myTTR.data <- myTTR(myStock)[,c("myATR", "myADX", "myMACD", "mySAR", "mySMI")]
+model.data <- specifyModel(formula=T.index(myStock, p=0.025, k=10) ~ myTTR.data + runMean(Cl(myStock)) )
+```
+
+## 從上市-到2020-0301為訓練模型
+
+```{r p9,warning=FALSE}
+train.data <- as.data.frame(modelData(model.data, data.window=c(start(myStock), as.Date("2020-03-01"))))
+```
+
+## 從2020-03-02到現在為測試模型--期間正是美國疫情爆發期
+
+```{r p10,warning=FALSE}
+test.data <- as.data.frame(modelData(model.data, data.window=c(as.Date("2020-03-02"), end(myStock))))
+```
+
+## 分組模擬
+
+```{r p11,warning=FALSE}
+colnames(train.data) <- c("T", "myATR", "myADX", "myMACD", "mySAR", "mySMI", "runMean")
+colnames(test.data) <- c("T", "myATR", "myADX", "myMACD", "mySAR", "mySMI", "runMean")
+form <- as.formula("T~.")
+
+rm(svm.model, svm.predict, signal.pred, signal.true)
+svm.model <- svm(form, train.data, cost=100)
+svm.predict <- predict(svm.model, na.omit(test.data)) #預測的資料
+test.data$predict<-svm.predict
+
+signal.pred <- T2Signal(x=svm.predict, a1=-0.095, a2=0.095)
+signal.true <- T2Signal(x=na.omit(test.data)$T, a1=-0.095, a2=0.095)
+test.data$signal<-signal.pred
+```
+
+# 決策樹
+
+```{r ptree, warning=FALSE}
+if (!require('rpart')){
+  install.packages("rpart"); library(rpart)
+}
+DT<-rpart(signal~myATR+myADX+myMACD+mySAR+mySMI+runMean,
+          data=test.data) #訓練組 Training set
+
+DT
+if (!require('rpart.plot')){
+  install.packages("rpart.plot"); 
+  library(rpart.plot)
+}
+prp(DT)
+knitr::kable(tail(test.data))
+```
+
+# 預測比對
+
+```{r p12}
+table(signal.pred, signal.true)
+```
+
+# 準確率
+
+```{r p13}
+accuracy2(signal.pred, signal.true)
+```
+
+在判斷完是不是要下手之後，接著就是到底賺多少的問題了
+
+
+# 疫情期間持有股票的交易分析
+
+## 有多少天的數據？
+
+```{r pressure, echo=FALSE}
+AAPL_COVID19<-as.matrix(to.daily(AAPL_COVID19))
+length(rownames(AAPL_COVID19))
+
+#每筆交易損益的向量紀錄
+#numeric(length(AAPL_COVID19))
+```
+
+## 期間每筆交易的損益
+
+```{r q1, echo=FALSE}
+#產生紀錄每筆交易損益的向量，並附上日期
+profit=setNames(numeric(length(rownames(AAPL_COVID19))),rownames(AAPL_COVID19))
+#每日收盤-開盤
+
+for(im in rownames(AAPL_COVID19))
+  {  
+   profit[im]=AAPL_COVID19[im,4]-AAPL_COVID19[im,1]
+}
+profit
+```
+
+## 總損益
+
+```{r q2, echo=FALSE}
+total1<-sum(profit)
+total1
+```
+
+## 累計損益
+
+```{r q3,echo=FALSE}
+cumsum(profit)
+```
+
+## 每次交易的損益
+
+```{r q4,echo=FALSE}
+plot1<-plot(profit,type="l",col="red",lwd=2)
+abline(h=0,col="green")
+```
+
+## 累積損益
+
+```{r q5,echo=FALSE}
+plot2<-plot(cumsum(profit),type="l",col="red",lwd=2)
+abline(h=0,col="green")
+```
+
+
+# 績效分析
+
+----
+
+## 贏的次數
+
+```{r q6,echo=FALSE}
+length(profit[profit>0])
+```
+
+## 勝率
+
+```{r q7,echo=FALSE}
+length(profit[profit>0])/length(profit[profit!=0])
+```
+
+## 平均賺/賠
+
+```{r q8,echo=FALSE}
+mean(profit[profit>0])
+
+mean(profit[profit<0])
+
+#賺賠比=平均賺/平均賠
+mean(profit[profit>0])/abs(mean(profit[profit<0]))
+```
+
+### 扣掉交易成本
+### 股票手續費
+### 成交金額*0.1425% 
+### 買賣各一次
+### 小數點以下無條件捨去，不足20元以20元計
+
+## 減去交易成本後的每次損益
+
+```{r q9,echo=FALSE}
+for (m in rownames(AAPL_COVID19)[-1]) 
+  {
+  fee=AAPL_COVID19[m,4]*0.001425
+  profit[m]=AAPL_COVID19[m,4]-AAPL_COVID19[m,1]-fee
+}
+cbind(AAPL_COVID19[,c(1,4)],profit)   ##check
+```
+
+## 總損益
+
+```{r q10,echo=FALSE}
+total2<-sum(profit)
+total2
+```
+
+## 累積損益
+
+```{r q11,echo=FALSE}
+cumsum(profit)
+```
+
+## 因交易成本造成的損失
+
+```{r q12,echo=FALSE}
+total1-total2
+```
+
+## 扣掉交易成本後的累積損益
+
+```{r q13,echo=FALSE}
+plot3<-plot(cumsum(profit),type="l",col="red",lwd=2)
+```
+
+## 扣掉交易成本後的損益
+
+```{r q14,echo=FALSE}
+plot4<-plot(profit,type="l",col="red",lwd=2)
+```
+
+
